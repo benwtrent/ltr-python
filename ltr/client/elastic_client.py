@@ -77,7 +77,7 @@ class ElasticClient(BaseClient):
             self.configs_dir, "%s_settings.json" % index)
         with open(cfg_json_path) as src:
             settings = json.load(src)
-            resp = self.es.indices.create(index, body=settings)
+            resp = self.es.indices.create(index=index, body=settings)
             resp_msg(msg="Created index {}".format(
                 index), resp=ElasticResp(resp))
 
@@ -115,45 +115,52 @@ class ElasticClient(BaseClient):
         return config["featureset"]["features"][int(ftr_idx) - 1]["name"]
 
     def log_query(self, index, ids, feature_names, feature_templates, feature_params={}):
-        params = {
-            "query": {
-                "bool": {
-                    "must": [
-                        {
-                            "terms": {
-                                "_id": ids,
-                            }
-                        }
-                    ]
-                }
-            },
-            "ext": {
-                "ltr": {
-                    "processors": feature_templates,
-                    "inference_config": {
-                        "ltr": {
-                            "params": feature_params
-                        }
-                    }
-                }
-            },
-            "size": 1000
-        }
+        matches_by_id = {} 
+        for (feature_name, feature_template) in zip(feature_names, feature_templates):
+            params = {
+                    "source": {
+                        "query": {
+                            "bool": {
+                                "must": [
+                                    feature_template
+                                ],
+                                "filter": [
+                                {
+                                    "terms": {
+                                        "_id": ids,
+                                    }
+                                }
+                            ]
+                            },
+                        },
+                        "size": 1000,
+                    },
+                    "params": feature_params
+            }
+            #print(f'{params}')
+            resp = self.es.search_template(index=index, body=params)
+            # resp_msg(msg="Searching {} - {}".format(index, str(terms_query)[:20]), resp=SearchResp(resp))
+            # just take the score and set it to the feature name
+            for hit in resp['hits']['hits']:
+                match = matches_by_id.get(hit['_id'], {})
+                if len(match) == 0:
+                    match = hit['_source']
+                    matches_by_id[hit['_id']] = match
+                    match['ltr_features'] = {}
+                match['ltr_features'][feature_name] = hit['_score']
 
-       # print(f'{params}')
-        resp = self.es.search(index=index, body=params)
-        # resp_msg(msg="Searching {} - {}".format(index, str(terms_query)[:20]), resp=SearchResp(resp))
-
-        matches = []
-        for hit in resp['hits']['hits']:
-            hit['_source']['ltr_features'] = []
-
-            feature_dict = hit['fields']['_ltr_features'][0]
-            for feature in feature_names:
-                hit['_source']['ltr_features'].append(feature_dict.get(feature, 0.0))
-            matches.append(hit['_source'])
-
-        return matches
+        # for any missing feature names, set to 0
+        for match in matches_by_id.values():
+            for feature_name in feature_names:
+                if feature_name not in match['ltr_features']:
+                    match['ltr_features'][feature_name] = 0
+        # make the features an array of floats 
+        for match in matches_by_id.values():
+            feature_values = []
+            for feature_name in feature_names:
+                feature_values.append(match['ltr_features'][feature_name])
+            match['ltr_features'] = feature_values
+        return matches_by_id.values() 
 
     def submit_model(self, featureset, index, model_name, model_payload):
         model_ep = "{}/_model/".format(self.elastic_ep)

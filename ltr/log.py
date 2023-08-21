@@ -44,10 +44,6 @@ class FeatureLogger:
                 break
             ids = docIds[start:start+numFetch]
 
-            # Sanitize (Solr has a strict syntax that can easily be tripped up)
-            # This removes anything but alphanumeric and spaces
-            keywords = re.sub('([^\s\w]|_)+', '', keywords)
-
             params = {
                 "keywords": keywords,
                 "fuzzy_keywords": ' '.join([x + '~' for x in keywords.split(' ')]),
